@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pixel Place</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #151c24;
+      --text: #e6edf3;
+      --muted: #9fb0c0;
+      --accent: #4cc2ff;
+      --danger: #ff6b6b;
+      --ok: #6bffb3;
+    }
+    * { box-sizing: border-box }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji" }
+    .app { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
+    header, footer { background: var(--panel); padding: .75rem 1rem; border-bottom: 1px solid #223041 }
+    footer { border-top: 1px solid #223041; border-bottom: none; display:flex; gap:1rem; align-items:center; justify-content:space-between }
+    header { display:flex; align-items:center; justify-content:space-between; gap: 1rem; }
+    h1 { font-size: 1.1rem; margin: 0; font-weight: 700; letter-spacing: .2px }
+    .muted { color: var(--muted) }
+    .toolbar { display:flex; align-items:center; gap: .5rem; flex-wrap: wrap }
+    .btn { background:#1e2936; color:var(--text); border:1px solid #2a3b52; padding:.5rem .75rem; border-radius: .75rem; cursor:pointer; transition: .15s ease; font-weight:600 }
+    .btn:hover { background:#223246 }
+    .btn[disabled] { opacity:.5; cursor:not-allowed }
+    .badge { padding:.35rem .6rem; border-radius: .6rem; border:1px solid #2a3b52; background:#151d27; font-size:.85rem }
+    .danger { color: var(--danger) }
+    .ok { color: var(--ok) }
+
+    .stage { position: relative; overflow: hidden; background: #0a1016; }
+    canvas { display:block; width:100%; height:100%; background:#0a1016; image-rendering: pixelated; }
+
+    .palette { display:flex; gap:.4rem; flex-wrap: wrap; align-items:center }
+    .swatch { width: 22px; height: 22px; border-radius: .35rem; outline:1px solid rgba(255,255,255,.15); cursor: pointer; box-shadow: inset 0 0 0 2px rgba(0,0,0,.2) }
+    .swatch.selected { outline:2px solid var(--accent) }
+
+    .legend { display:flex; gap: .75rem; align-items:center; flex-wrap: wrap }
+
+    .toast { position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; background: #0f1722; border: 1px solid #2a3b52; padding: .6rem .85rem; border-radius: .75rem; box-shadow: 0 10px 30px rgba(0,0,0,.35); font-weight:600 }
+
+    .right { display:flex; align-items:center; gap:.5rem }
+    .sep { width:1px; height:24px; background:#223041; margin: 0 .25rem }
+    a, a:visited { color: var(--accent); text-decoration: none }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>🎨 Pixel Place <span class="muted">— estilo r/place</span></h1>
+      <div class="toolbar">
+        <div class="palette" id="palette"></div>
+        <span class="sep"></span>
+        <button class="btn" id="zoomIn">Zoom +</button>
+        <button class="btn" id="zoomOut">Zoom −</button>
+        <button class="btn" id="resetView">Reiniciar vista</button>
+        <span class="sep"></span>
+        <button class="btn" id="downloadPng">Descargar PNG</button>
+      </div>
+    </header>
+
+    <div class="stage" id="stage">
+      <canvas id="board"></canvas>
+      <div class="toast" id="toast" style="display:none"></div>
+    </div>
+
+    <footer>
+      <div class="legend">
+        <span class="badge">Tamaño del tablero: <strong id="sizeLabel"></strong> (1.000 píxeles)</span>
+        <span class="badge">Quedan por pintar: <strong id="remainingLabel">—</strong></span>
+        <span class="badge">Tus trazos: <strong id="yourPaints">0</strong>/50</span>
+        <span class="badge">Enfriamiento: <strong id="cooldownLabel">—</strong></span>
+      </div>
+      <div class="right">
+        <span class="muted">Modo:</span>
+        <span class="badge" id="modeBadge">local</span>
+        <a href="#" id="how" class="muted">¿Cómo funciona?</a>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Firebase opcional: pon tu config en window.FIREBASE_CONFIG antes de este script para activar el tiempo real.  
+  <script>
+    window.FIREBASE_CONFIG = { /* tu config aquí */ };
+  </script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+  -->
+
+  <script>
+  /**
+   * Pixel Place — GitHub Pages, sin backend. 
+   * - Tablero 40x25 = 1.000 píxeles
+   * - Puedes pintar hasta 50 y luego esperas 5 minutos (enfriamiento por usuario/navegador)
+   * - Zoom y pan para explorar
+   * - Paleta con 24 colores
+   * - Persistencia localStorage. Si defines window.FIREBASE_CONFIG y cargas Firebase compat, 
+   *   sincroniza en tiempo real (opcional) y contabiliza el contador global de "quedan por pintar".
+   */
+  (function(){
+    const GRID_W = 40, GRID_H = 25; // 1.000 píxeles exactos
+    const PALETTE = [
+      "#000000","#ffffff","#ff0000","#00ff00","#0000ff","#ffff00",
+      "#ff00ff","#00ffff","#c0c0c0","#808080","#800000","#808000",
+      "#008000","#800080","#008080","#000080","#ffa500","#a52a2a",
+      "#ffd700","#4b0082","#f0e68c","#ff69b4","#2e8b57","#1e90ff"
+    ];
+
+    // DOM refs
+    const canvas = document.getElementById('board');
+    const stage = document.getElementById('stage');
+    const sizeLabel = document.getElementById('sizeLabel');
+    const remainingLabel = document.getElementById('remainingLabel');
+    const yourPaintsEl = document.getElementById('yourPaints');
+    const cooldownLabel = document.getElementById('cooldownLabel');
+    const modeBadge = document.getElementById('modeBadge');
+    const toastEl = document.getElementById('toast');
+
+    const zoomInBtn = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const resetViewBtn = document.getElementById('resetView');
+    const downloadBtn = document.getElementById('downloadPng');
+
+    sizeLabel.textContent = `${GRID_W} × ${GRID_H}`;
+
+    // Canvas state
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const pxSize = 20; // base logical pixel size for initial fit
+    let scale = 1, minScale = 1, maxScale = 24; // controlled later on resize
+    let camera = { x: 0, y: 0 }; // world coords top-left in pixels
+
+    // Board data: Uint32 color indices (-1 => empty)
+    const EMPTY = -1;
+    const board = new Int16Array(GRID_W * GRID_H).fill(EMPTY);
+
+    // Local persistence keys
+    const KEY_BOARD = 'pixelplace.board.v1';
+    const KEY_P_STATS = 'pixelplace.stats.v1';
+
+    // Paint quota
+    const QUOTA = 50; // paints per window
+    const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+
+    // Global remaining (shared if Firebase on, else local calc)
+    let globalRemaining = GRID_W * GRID_H; // starts at 1000
+
+    // Selected color
+    let colorIndex = 2; // default red
+
+    // Initialize palette UI
+    const pal = document.getElementById('palette');
+    PALETTE.forEach((hex, i) => {
+      const b = document.createElement('button');
+      b.className = 'swatch' + (i === colorIndex ? ' selected' : '');
+      b.style.background = hex;
+      b.title = hex;
+      b.addEventListener('click', () => {
+        colorIndex = i;
+        document.querySelectorAll('.swatch').forEach(el=>el.classList.remove('selected'));
+        b.classList.add('selected');
+      });
+      pal.appendChild(b);
+    });
+
+    // Stats per user
+    function loadStats(){
+      const s = JSON.parse(localStorage.getItem(KEY_P_STATS) || '{}');
+      return {
+        paints: s.paints|0,
+        windowStart: s.windowStart || 0,
+      }
+    }
+    function saveStats(s){ localStorage.setItem(KEY_P_STATS, JSON.stringify(s)); }
+
+    // Load board from storage
+    function loadBoard(){
+      const raw = localStorage.getItem(KEY_BOARD);
+      if (!raw) return;
+      try {
+        const arr = JSON.parse(raw);
+        for(let i=0;i<arr.length && i<board.length;i++) board[i] = arr[i];
+      } catch(e) { console.warn('No se pudo cargar el tablero local:', e); }
+    }
+    function saveBoard(){ localStorage.setItem(KEY_BOARD, JSON.stringify(Array.from(board))); }
+
+    // Firebase (opcional)
+    let fb = null, db = null, fbBoardRef = null, fbMetaRef = null;
+    const hasFirebase = typeof window !== 'undefined' && window.FIREBASE_CONFIG && window.firebase;
+    if (hasFirebase){
+      try {
+        fb = window.firebase.initializeApp(window.FIREBASE_CONFIG);
+        db = window.firebase.database();
+        modeBadge.textContent = 'tiempo real';
+      } catch(e){ console.error('Firebase init error', e); }
+    } else {
+      modeBadge.textContent = 'local';
+    }
+
+    // If Firebase present, wire realtime sync
+    function setupFirebase(){
+      if (!db) return;
+      fbBoardRef = db.ref('board');
+      fbMetaRef = db.ref('meta');
+
+      // Initial push of empty board if not exists (first user)
+      fbBoardRef.get().then(snap => {
+        if (!snap.exists()) {
+          const empty = Array.from({length: GRID_W * GRID_H}, () => EMPTY);
+          fbBoardRef.set(empty);
+          fbMetaRef.set({ globalRemaining: GRID_W*GRID_H });
+        }
+      });
+
+      // Listen for board updates
+      fbBoardRef.on('value', (snap) => {
+        const arr = snap.val();
+        if (!arr) return;
+        for(let i=0;i<board.length;i++) board[i] = arr[i];
+        globalRemaining = board.reduce((acc,v)=> acc + (v===EMPTY?1:0), 0);
+        updateLabels();
+        draw();
+        saveBoard();
+      });
+
+      // Listen for meta updates
+      fbMetaRef.on('value', (snap) => {
+        const m = snap.val();
+        if (m && typeof m.globalRemaining === 'number') {
+          globalRemaining = m.globalRemaining;
+          updateLabels();
+        }
+      });
+    }
+
+    // Helpers
+    function idx(x,y){ return y*GRID_W + x }
+    function inBounds(x,y){ return x>=0 && y>=0 && x<GRID_W && y<GRID_H }
+
+    // Rendering
+    function resize(){
+      const rect = stage.getBoundingClientRect();
+      canvas.width = rect.width * devicePixelRatio;
+      canvas.height = rect.height * devicePixelRatio;
+      ctx.imageSmoothingEnabled = false;
+      // Fit to view
+      const scaleX = (rect.width * devicePixelRatio) / (GRID_W * pxSize);
+      const scaleY = (rect.height * devicePixelRatio) / (GRID_H * pxSize);
+      minScale = Math.min(scaleX, scaleY);
+      if (scale < minScale) scale = minScale;
+      draw();
+    }
+
+    function draw(){
+      const w = canvas.width, h = canvas.height;
+      ctx.fillStyle = '#0a1016';
+      ctx.fillRect(0,0,w,h);
+
+      ctx.save();
+      ctx.translate(-camera.x, -camera.y);
+      ctx.scale(scale, scale);
+
+      // Draw pixels
+      for (let y=0;y<GRID_H;y++){
+        for (let x=0;x<GRID_W;x++){
+          const v = board[idx(x,y)];
+          ctx.fillStyle = (v===EMPTY) ? '#0f1620' : PALETTE[v];
+          ctx.fillRect(x*pxSize, y*pxSize, pxSize, pxSize);
+        }
+      }
+      // Grid lines (subtle)
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      for (let x=0;x<=GRID_W;x++){
+        ctx.beginPath();
+        ctx.moveTo(x*pxSize+0.5, 0);
+        ctx.lineTo(x*pxSize+0.5, GRID_H*pxSize);
+        ctx.stroke();
+      }
+      for (let y=0;y<=GRID_H;y++){
+        ctx.beginPath();
+        ctx.moveTo(0, y*pxSize+0.5);
+        ctx.lineTo(GRID_W*pxSize, y*pxSize+0.5);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    // Pan & zoom
+    let isPanning = false; let last = {x:0,y:0};
+    stage.addEventListener('mousedown', (e)=>{ isPanning = true; last = {x:e.clientX, y:e.clientY}; });
+    window.addEventListener('mouseup', ()=> isPanning=false);
+    window.addEventListener('mousemove', (e)=>{
+      if (!isPanning) return;
+      const dx = (e.clientX - last.x) * devicePixelRatio;
+      const dy = (e.clientY - last.y) * devicePixelRatio;
+      camera.x -= dx; camera.y -= dy;
+      last = {x:e.clientX, y:e.clientY};
+      draw();
+    });
+    stage.addEventListener('wheel', (e)=>{
+      e.preventDefault();
+      const delta = Math.sign(e.deltaY);
+      const factor = delta>0 ? 1/1.15 : 1.15;
+      const rect = canvas.getBoundingClientRect();
+      const cx = (e.clientX - rect.left) * devicePixelRatio + camera.x;
+      const cy = (e.clientY - rect.top) * devicePixelRatio + camera.y;
+      // zoom towards cursor
+      const before = { x: cx/scale, y: cy/scale };
+      scale = Math.min(maxScale, Math.max(minScale, scale * factor));
+      const after = { x: cx/scale, y: cy/scale };
+      camera.x += (after.x - before.x) * scale;
+      camera.y += (after.y - before.y) * scale;
+      draw();
+    }, { passive:false });
+
+    // Painting
+    stage.addEventListener('click', (e)=>{
+      // translate screen -> world -> grid
+      const rect = canvas.getBoundingClientRect();
+      const sx = (e.clientX - rect.left) * devicePixelRatio + camera.x;
+      const sy = (e.clientY - rect.top) * devicePixelRatio + camera.y;
+      const wx = Math.floor((sx/scale) / pxSize);
+      const wy = Math.floor((sy/scale) / pxSize);
+      if (!inBounds(wx,wy)) return;
+      attemptPaint(wx,wy);
+    });
+
+    function attemptPaint(x,y){
+      // Check global remaining
+      if (globalRemaining <= 0){
+        return toast('No quedan píxeles por pintar.');
+      }
+      // Check quota window
+      const now = Date.now();
+      const stats = loadStats();
+      if (stats.windowStart === 0 || now - stats.windowStart >= COOLDOWN_MS){
+        stats.windowStart = now;
+        stats.paints = 0;
+      }
+      if (stats.paints >= QUOTA){
+        const left = COOLDOWN_MS - (now - stats.windowStart);
+        return toast(`Has alcanzado ${QUOTA}. Espera ${formatMs(left)}.`);
+      }
+
+      const i = idx(x,y);
+      const wasEmpty = board[i]===EMPTY;
+      board[i] = colorIndex; // set color
+      saveBoard();
+      if (db && fbBoardRef){ // real-time write
+        // transactional update to keep meta count coherent
+        fbBoardRef.child(String(i)).set(colorIndex);
+        if (wasEmpty){
+          db.ref('meta/globalRemaining').transaction(val => (typeof val==='number'? Math.max(0, val-1) : GRID_W*GRID_H-1));
+        }
+      }
+      if (wasEmpty && !db) { globalRemaining = Math.max(0, globalRemaining-1); }
+
+      stats.paints++;
+      saveStats(stats);
+      updateLabels();
+      draw();
+    }
+
+    function updateLabels(){
+      yourPaintsEl.textContent = Math.min(loadStats().paints, QUOTA);
+      remainingLabel.textContent = String(globalRemaining);
+    }
+
+    function tick(){
+      const now = Date.now();
+      const s = loadStats();
+      let cd = 0;
+      if (s.windowStart && s.paints >= QUOTA){
+        cd = Math.max(0, COOLDOWN_MS - (now - s.windowStart));
+        if (cd===0){ s.paints = 0; s.windowStart = 0; saveStats(s); updateLabels(); }
+      }
+      cooldownLabel.textContent = cd>0 ? formatMs(cd) : 'listo';
+      requestAnimationFrame(()=>{}); // keep UI fresh in some browsers
+    }
+    setInterval(tick, 250);
+
+    function formatMs(ms){
+      const s = Math.ceil(ms/1000);
+      const m = Math.floor(s/60), r = s%60;
+      return `${String(m).padStart(1,'0')}:${String(r).padStart(2,'0')} min`;
+    }
+
+    function toast(msg){
+      toastEl.textContent = msg; toastEl.style.display = 'block';
+      clearTimeout(toastEl._t);
+      toastEl._t = setTimeout(()=> toastEl.style.display='none', 2000);
+    }
+
+    // Buttons
+    zoomInBtn.addEventListener('click', ()=>{ scale = Math.min(maxScale, scale*1.2); draw(); });
+    zoomOutBtn.addEventListener('click', ()=>{ scale = Math.max(minScale, scale/1.2); draw(); });
+    resetViewBtn.addEventListener('click', ()=>{ camera={x:0,y:0}; scale=minScale; draw(); });
+
+    downloadBtn.addEventListener('click', ()=>{
+      // Render at native grid resolution without UI gridlines
+      const tmp = document.createElement('canvas');
+      tmp.width = GRID_W; tmp.height = GRID_H;
+      const c = tmp.getContext('2d');
+      for (let y=0;y<GRID_H;y++){
+        for (let x=0;x<GRID_W;x++){
+          const v = board[idx(x,y)];
+          c.fillStyle = (v===EMPTY) ? '#0f1620' : PALETTE[v];
+          c.fillRect(x, y, 1, 1);
+        }
+      }
+      const link = document.createElement('a');
+      link.download = 'pixel-place.png';
+      link.href = tmp.toDataURL('image/png');
+      link.click();
+    });
+
+    // Help link
+    document.getElementById('how').addEventListener('click', (e)=>{
+      e.preventDefault();
+      const msg = `Cómo usar:\n\n`+
+        `• Haz zoom con la rueda del ratón (o botones).\n`+
+        `• Arrastra para moverte por el tablero.\n`+
+        `• Elige un color y haz click para pintar.\n`+
+        `• Puedes pintar hasta 50 píxeles y luego esperas 5 minutos.\n`+
+        `• El tablero es de 40×25 = 1.000 píxeles.\n`+
+        `• Por defecto guarda en tu navegador.\n`+
+        `• Si configuras Firebase (opcional), será colaborativo en tiempo real y el contador de \"quedan por pintar\" será global.`;
+      alert(msg);
+    });
+
+    // Startup
+    window.addEventListener('resize', resize);
+    loadBoard();
+    // compute remaining if local mode
+    globalRemaining = board.reduce((acc,v)=> acc + (v===EMPTY?1:0), 0);
+    updateLabels();
+    resize();
+    draw();
+    if (hasFirebase) setupFirebase();
+  })();
+  </script>
+
+  <!--
+  📦 Despliegue en GitHub Pages
+  1) Crea un repositorio y añade este archivo como /index.html
+  2) Activa GitHub Pages en Settings → Pages → Source: main / root
+  3) (Opcional) Para tiempo real: crea un proyecto Firebase y pega tu config en FIREBASE_CONFIG, descomenta los <script> de Firebase.
+     - Habilita Realtime Database (modo test) y añade reglas básicas o seguridad por dominio.
+     - Este archivo ya intentará sincronizar el array `board` y `meta.globalRemaining`.
+
+  🔧 Ajustes rápidos
+  - Cambia GRID_W/GRID_H para otro tamaño. Si quieres mantener 1.000 píxeles, usa combinaciones como 50×20, 25×40, etc.
+  - QUOTA y COOLDOWN_MS controlan el límite 50 → 5 minutos.
+  - PALETTE define los colores disponibles.
+  -->
+</body>
+</html>
